@@ -26,7 +26,10 @@ input[type=text],input[type=password]{background:#0f1318;border:1px solid var(--
 #routeInput{flex:1 1 140px}
 textarea{width:100%;min-height:52vh;background:#0f1318;border:1px solid var(--line);border-radius:10px;padding:10px;line-height:1.7;white-space:pre;overflow:auto;resize:vertical}
 .hint{color:var(--muted);font-size:12px;margin:6px 0 0}
-#count{font-weight:800;color:#fff}
+#count,#saveCount{font-weight:800;color:#fff}
+.lists{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.lists label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px}
+#saveCount.bad{color:var(--warn)}
 #progressBar{height:8px;background:#0f1318;border-radius:99px;overflow:hidden;margin:10px 0 6px;border:1px solid var(--line)}
 #progressBar div{height:100%;width:0;background:var(--accent);transition:width .2s}
 #status{color:var(--muted);min-height:1.5em;overflow-wrap:anywhere}
@@ -69,8 +72,13 @@ li.running{border-color:var(--accent)!important}
       <button id="loadRoute">불러오기</button>
     </div>
     <p class="hint" id="routeInfo">노선 번호를 넣으면 정류소가 순서대로 채워집니다. 한 줄에 하나씩, 직접 고치거나 붙여넣어도 됩니다.</p>
-    <textarea id="names" spellcheck="false" placeholder="서울서진학교.우체국앞.허준박물관&#10;가양4단지아파트&#10;…"></textarea>
-    <p class="hint">정류소 <span id="count">0</span>개 · 마지막 줄은 종착 방송으로 만듭니다</p>
+    <div class="lists">
+      <div><label for="names">방송할 정류소 (순서대로)</label>
+        <textarea id="names" spellcheck="false" placeholder="온수동종점&#10;온수역&#10;…"></textarea></div>
+      <div><label for="saveNames">저장할 파일 이름 (같은 줄끼리 짝)</label>
+        <textarea id="saveNames" spellcheck="false" placeholder="비워 두면 왼쪽 이름으로 저장"></textarea></div>
+    </div>
+    <p class="hint">정류소 <span id="count">0</span>개 · 파일 이름 <span id="saveCount">0</span>개 · 마지막 줄은 종착 방송으로 만듭니다. 오른쪽 N번째 줄이 왼쪽 N번째 정류소 방송의 파일 이름이 됩니다(.wav는 자동).</p>
   </section>
 
   <section class="card">
@@ -215,15 +223,21 @@ async function loadRoute(){
   const stopAt=i=>byNode.get(String(r.nodes[i]));
   const names=[];
   r.nodes.forEach((n,i)=>{if(!guideExcluded(r,i,stopAt))names.push(stopAt(i).name);});
-  $('names').value=names.join('\n');updateCount();
+  $('names').value=names.join('\n');$('saveNames').value=names.join('\n');updateCount();
   $('routeInfo').textContent=`${r.name}번 · 정류소 ${names.length}개 (가상 정류소 제외)`;
   document.title=`${r.name} 안내방송 제작`;
 }
 $('loadRoute').onclick=loadRoute;
 $('routeInput').onkeydown=e=>{if(e.key==='Enter')loadRoute();};
-function nameList(){return $('names').value.split(/\r?\n/).map(s=>s.replace(/[（]/g,'(').replace(/[）]/g,')').trim()).filter(Boolean);}
-function updateCount(){$('count').textContent=nameList().length;}
-$('names').addEventListener('input',updateCount);
+const lines=id=>$(id).value.split(/\r?\n/).map(s=>s.replace(/[（]/g,'(').replace(/[）]/g,')').trim()).filter(Boolean);
+function nameList(){return lines('names');}
+function saveList(){return lines('saveNames').map(s=>s.replace(/\.wav$/i,''));}
+function updateCount(){
+  const n=nameList().length,m=saveList().length;
+  $('count').textContent=n;$('saveCount').textContent=m;
+  $('saveCount').classList.toggle('bad',m>0&&m!==n);
+}
+$('names').addEventListener('input',updateCount);$('saveNames').addEventListener('input',updateCount);
 
 /* ---------------- audio ---------------- */
 const SR=44100;
@@ -364,12 +378,15 @@ function row(i,name){
 }
 $('start').onclick=async()=>{
   await init();
-  const names=nameList();
+  const names=nameList(),saves=saveList(),used=new Map();
+  // Output file i is named by line i of the right list (falls back to the stop name).
+  // A repeated name (e.g. both directions) gets "_2", "_3" so the ZIP keeps every file.
+  const fileFor=i=>{const base=safe(saves[i]||names[i]),n=(used.get(base)||0)+1;used.set(base,n);return (n>1?base+'_'+n:base)+'.wav';};
   if(!names.length){setStatus('정류소 목록이 비어 있습니다.');return;}
   cancelled=false;outputs=[];clipCache.clear();$('results').innerHTML='';
   $('start').disabled=true;$('stop').disabled=false;$('zip').disabled=true;
   await audioCtx().resume().catch(()=>{});
-  const rows=names.map((n,i)=>row(i,n)),label=String(findRoute($('routeInput').value)?.name||'노선'),width=String(names.length).length;
+  const rows=names.map((n,i)=>row(i,n)),label=String(findRoute($('routeInput').value)?.name||'노선');
   let aiCount=0,missCount=0;
   for(let i=0;i<names.length;i++){
     if(cancelled)break;
@@ -377,7 +394,7 @@ $('start').onclick=async()=>{
     setStatus(`${i+1}/${names.length} · ${names[i]} 만드는 중…`);
     try{
       const r=await buildOne(names,i);
-      const file=`${String(i+1).padStart(Math.max(2,width),'0')}_${safe(names[i])}.wav`;
+      const file=fileFor(i);
       outputs.push({name:file,data:r.wav});aiCount+=r.ai?1:0;missCount+=r.missing.length?1:0;
       const tags=[];
       tags.push(r.ai?`<span class="tag ai">AI ${r.ai}개</span>`:'<span class="tag rec">녹음만</span>');
