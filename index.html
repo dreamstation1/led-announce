@@ -195,8 +195,9 @@ function init(){
     const ai=patch.match(/const AI_TTS_DEFAULT='([^']+)'/);if(ai)AI_BASE=ai[1];
     try{const v=localStorage.getItem('aiTtsUrl');if(v)AI_BASE=v;}catch(e){}
     AI_BASE=AI_BASE.replace(/\/+$/,'');
+    window.LED_BASE=LED;  // official English table (stop-en.json) lives on the bus app site
     TR=new Function(between(html,'const STOP_TEXT_EN=','async function englishNameFor')+';return {romanizeKorean,translateStationName};')();
-    TXT=new Function('romanizeKorean',between(patch,'const LATIN_KO=','const AiCache')+';return {koreanizeLatin,koreanizeNumbers,spaceLongKoreanName};')(TR.romanizeKorean);
+    TXT=new Function('romanizeKorean',between(patch,'const LATIN_KO=','const AiCache')+';return {koreanizeLatin,koreanizeNumbers,spaceLongKoreanName,speakableEnglish};')(TR.romanizeKorean);
     setStatus(`준비 완료 · 녹음 ${MANIFEST.size}개 · 영어 제외 ${SKIP_ENGLISH.size}곳`);
   })().catch(e=>{setStatus('데이터를 불러오지 못했습니다: '+e.message);ready=null;throw e;});
   return ready;
@@ -281,7 +282,7 @@ function recordingFile(category,key){
 }
 async function aiSynth(textIn,lang,source){
   const en=lang==='en';
-  let say=String(textIn||'').replace(/\s*[.·]\s*/g,', ').trim();
+  let say=(en?TXT.speakableEnglish(textIn):String(textIn||'')).replace(/\s*[.·]\s*/g,', ').replace(/(,\s*)+$/,'').trim();
   say=en?say:TXT.koreanizeNumbers(TXT.koreanizeLatin(say.split(', ').map(TXT.spaceLongKoreanName).join(', ')));
   if(!say)return null;
   const qs=new URLSearchParams({text:say,text_lang:en?'en':'ko',text_split_method:'cut0',batch_size:'1',media_type:'wav'});
