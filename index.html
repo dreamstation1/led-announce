@@ -333,11 +333,11 @@ async function buildOne(names,i){
     if(!c){missing.push(key);continue;}
     if(c.src==='ai')ai++;
     const t=trim(c.x),g=loudnessGain(t);
-    parts.push({x:t,g,gap:cat==='stops'?450:180});
+    parts.push({x:t,g});
   }
-  const total=parts.reduce((n,p,k)=>n+p.x.length+(k<parts.length-1?Math.round(p.gap*SR/1000):0),0);
+  const total=parts.reduce((n,p)=>n+p.x.length,0);
   const out=new Float32Array(Math.max(1,total));let off=0;
-  parts.forEach((p,k)=>{for(let n=0;n<p.x.length;n++)out[off+n]=p.x[n]*p.g;off+=p.x.length+(k<parts.length-1?Math.round(p.gap*SR/1000):0);});
+  parts.forEach(p=>{for(let n=0;n<p.x.length;n++)out[off+n]=p.x[n]*p.g;off+=p.x.length;});
   return {wav:encodeWav(out),ai,missing,skipEnglish:SKIP_ENGLISH.has(names[i]),seconds:out.length/SR};
 }
 function encodeWav(x){
