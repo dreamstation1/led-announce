@@ -153,7 +153,7 @@ $('gateForm').onsubmit=e=>{
 
 /* ---------------- data from the bus app ---------------- */
 let STOPS=[],ROUTES=[],MANIFEST=new Set(),AUDIO_NAME=new Map();
-let SKIP_ENGLISH=new Set(),TXT=null,TR=null,AI_BASE='https://168-110-38-243.sslip.io';
+let VOICE=new Map(),SKIP_ENGLISH=new Set(),TXT=null,TR=null,AI_BASE='https://168-110-38-243.sslip.io';
 async function text(url){const r=await fetch(url,{cache:'no-cache'});if(!r.ok)throw new Error(url+' '+r.status);return r.text();}
 function jsonAfter(src,marker){
   const i=src.indexOf(marker);if(i<0)throw new Error(marker+' 없음');
@@ -189,6 +189,7 @@ function init(){
     }
     STOPS.forEach(s=>{if(s.audioName&&s.audioName!==s.name&&!AUDIO_NAME.has(s.name))AUDIO_NAME.set(s.name,s.audioName);});
     MANIFEST=new Set(JSON.parse(manifest));
+    try{VOICE=new Map(Object.entries(await (await fetch(LED+'voice-groups.json',{cache:'no-cache'})).json()).map(([k,v])=>[k.replace(/\s*\(\d+\)$/,''),String(v)]));}catch(e){VOICE=new Map();}
     // Reuse the app's own rules so exports always match the simulation.
     const skip=patch.match(/const skipEnglish=new Set\((\[[^\]]*\])\)/);
     if(skip)SKIP_ENGLISH=new Set(JSON.parse(skip[1].replace(/'/g,'"')));
@@ -280,12 +281,12 @@ function recordingFile(category,key){
   for(const k of keys)for(const ext of ['.wav','.mp3'])for(const f of [k+ext,category+'/'+k+ext])if(MANIFEST.has(f))return f;
   return null;
 }
-async function aiSynth(textIn,lang,source){
+async function aiSynth(textIn,lang,source,voice){
   const en=lang==='en';
   let say=(en?TXT.speakableEnglish(textIn):String(textIn||'')).replace(/\s*[.·]\s*/g,', ').replace(/(,\s*)+$/,'').trim();
   say=en?say:TXT.koreanizeNumbers(TXT.koreanizeLatin(say.split(', ').map(TXT.spaceLongKoreanName).join(', ')));
   if(!say)return null;
-  const qs=new URLSearchParams({text:say,text_lang:en?'en':'ko',text_split_method:'cut0',batch_size:'1',media_type:'wav'});
+  const qs=new URLSearchParams({text:say,text_lang:en?'en':'ko',text_split_method:'cut0',batch_size:'1',media_type:'wav',...(!en&&voice?{voice}:{})});
   const minSec=say.replace(/[\s,.]/g,'').length/(en?30:12);
   let best=null,bestDur=-1;
   for(let attempt=0;attempt<3;attempt++){
@@ -301,8 +302,17 @@ async function aiSynth(textIn,lang,source){
   return best;
 }
 // -> {x: Float32Array, src:'rec'|'ai'} or null
-async function clip(category,key){
-  const id=category+'|'+key;
+// Same voice-group rule as the app: a stop with a recording has a known group (1/2); a stop
+// without one uses the group of the nearest recorded stop in this list (earlier first).
+function voiceFor(name,names){
+  if(VOICE.has(name))return VOICE.get(name);
+  const i=names.indexOf(name);if(i<0)return '';
+  for(let d=1;d<names.length;d++)for(const j of [i-d,i+d])if(j>=0&&j<names.length&&VOICE.has(names[j]))return VOICE.get(names[j]);
+  return '';
+}
+async function clip(category,key,names=[]){
+  const voice=category==='stops'&&!/ \(1\)$/.test(key)?voiceFor(key,names):'';
+  const id=category+'|'+key+'|'+voice;
   if(clipCache.has(id))return clipCache.get(id);
   const p=(async()=>{
     const f=recordingFile(category,key);
@@ -311,7 +321,7 @@ async function clip(category,key){
     const english=/ \(1\)$/.test(key),name=key.replace(/ \(1\)$/,'');
     let t=name+'입니다';
     if(english){try{t=await TR.translateStationName(name);}catch(e){t=name;}}
-    const x=await aiSynth(t,english?'en':'ko',name);
+    const x=await aiSynth(t,english?'en':'ko',name,voice);
     return x?{x,src:'ai'}:null;
   })();
   clipCache.set(id,p);
@@ -329,7 +339,7 @@ async function buildOne(names,i){
   const specs=specsFor(names,i),parts=[],missing=[];let ai=0;
   for(const [cat,key] of specs){
     if(cancelled)throw new Error('중지됨');
-    const c=await clip(cat,key);
+    const c=await clip(cat,key,names);
     if(!c){missing.push(key);continue;}
     if(c.src==='ai')ai++;
     const t=trim(c.x),g=loudnessGain(t);
